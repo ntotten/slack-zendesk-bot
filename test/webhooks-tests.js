@@ -9,11 +9,10 @@ describe('Ticket command', function(){
       token: process.env.SLACK_COMMAND_TOKEN,
       user_id: process.env.TEST_SLACK_USER_ID,
       channel_id: process.env.TEST_SLACK_CHANNEL_ID,
-      text: '@ntotten This is a test test test test'
+      text: '@rolodato This is a test test test test'
     }
     commands.openTicket(data)
     .then(result => {
-      console.log(result);
       done();
     }).catch(done);
   });
