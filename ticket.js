@@ -3,13 +3,24 @@ var request = require('request');
 var moment = require('moment');
 var util = require('util');
 
-var zendeskRootUrl = 'https://auth0.zendesk.com/api/v2/';
-var slackRootUrl = 'https://slack.com/api/';
+
 
 var slackUsersById = new Map();
 var slackUsersByName = new Map();
 
 return function(context, req, res) {
+
+  var zendeskRootUrl = util.format('https://%s.zendesk.com/api/v2', context.data.zendesk_tenant);
+  var slackRootUrl = 'https://slack.com/api';
+  var ticketOpenedMessage = '<%s> A support ticket (%s) has been opened for your request. We contact you through the email address associated with your Slack account as soon as possible.';
+  var ticketCreatedMessage = util.format('Ticket created: <https://%s.zendesk.com/agent/tickets/%s|%s>', context.data.zendesk_tenant);
+  var userErrorMessage = util.format('An error has occurred. If you would like to open a support ticket please email %s', context.data.support_email);
+  var noCommentsErrorMessage = 'No recent comments found for %s. You must provide the issue text.';
+  var noUserProvidedErrorMessage = 'Cannot open ticket. User was not provided.';
+  var verificationMissmatchErrorMessage = 'Slack payload token mismatch.';
+  var invalidSlackUserErrorMessage = 'Could not find slack user.';
+  var defaultTicketSubject = 'Slack chat with %s';
+  var slackbotUsername = 'support';
 
   function getSlackUser(userId) {
     return new Promise((resolve, reject) => {
@@ -19,11 +30,11 @@ return function(context, req, res) {
       }
 
       request({
-        url: slackRootUrl + 'users.info?token=' + context.data.slack_api_token + '&user=' + user_id,
+        url: util.format('%s/users.info?token=%s&user=%s', slackRootUrl, context.data.slack_api_token, user_id),
         method: 'GET'
       }, function(err, response, body) {
         if (err || response.statusCode !== 200) {
-          console.error('slack/users.info: ' + JSON.stringify(body));
+          console.log('slack/users.info: ' + JSON.stringify(body));
           return reject(err || 'Status code: ' + response.statusCode);
         }
         var result = JSON.parse(body);
@@ -42,14 +53,15 @@ return function(context, req, res) {
       }
 
       request({
-        url: slackRootUrl + 'users.list?token=' + context.data.slack_api_token,
+        url: util.format('%s/users.list?token=%s', slackRootUrl, context.data.slack_api_token),
         method: 'GET'
       }, function(err, response, body) {
         if (err || response.statusCode !== 200) {
-          console.error('slack/users.list: ' + JSON.stringify(body));
+          console.log('slack/users.list: ' + JSON.stringify(body));
           return reject(err || 'Status code: ' + response.statusCode);
         }
         var result = JSON.parse(body);
+
         for (var i = 0; i < result.members.length; i++) {
           var user = result.members[i];
           slackUsersById.set(user.id, user);
@@ -59,7 +71,7 @@ return function(context, req, res) {
         if (slackUsersByName.has(username)) {
           return resolve(slackUsersByName.get(username));
         } else {
-          return reject('Could not find slack user.');
+          return reject(invalidSlackUserErrorMessage);
         }
       });
     });
@@ -68,11 +80,11 @@ return function(context, req, res) {
   function getSlackMessages(channelId, oldestTime) {
     return new Promise((resolve, reject) => {
       request({
-        url: util.format('%schannels.history?token=%s&channel=%s&oldest=%s', slackRootUrl, context.data.slack_api_token, channelId, oldestTime),
+        url: util.format('%s/channels.history?token=%s&channel=%s&oldest=%s', slackRootUrl, context.data.slack_api_token, channelId, oldestTime),
         method: 'GET'
       }, function(err, response, body) {
         if (err || response.statusCode !== 200) {
-          console.error('slack/channels.history: ' + JSON.stringify(body));
+          console.log('slack/channels.history: ' + JSON.stringify(body));
           return reject(err || 'Status code: ' + response.statusCode);
         }
         var result = JSON.parse(body);
@@ -85,7 +97,7 @@ return function(context, req, res) {
     return new Promise((resolve, reject) => {
       var token = new Buffer(context.data.zendesk_api_email + '/token:' + context.data.zendesk_api_token).toString('base64');
       request({
-        url: zendeskRootUrl + 'tickets.json',
+        url: util.format('%s/tickets.json', zendeskRootUrl),
         method: 'POST',
         headers: {
           'Authorization': 'Basic ' + token
@@ -93,7 +105,7 @@ return function(context, req, res) {
         json: { ticket: ticket }
       }, function(err, response, body) {
         if (err || response.statusCode !== 201) {
-          console.error('zendesk/postticket: ' + JSON.stringify(body));
+          console.log('zendesk/postticket: ' + JSON.stringify(body));
           return reject(err || 'Status code: ' + response.statusCode);
         }
         resolve(body);
@@ -104,11 +116,11 @@ return function(context, req, res) {
   function postSlackMessage(channelId, text, username, iconUrl) {
     return new Promise((resolve, reject) => {
       request({
-        url: util.format('%schat.postMessage?token=%s&channel=%s&text=%s&username=%s&icon_url=%s', slackRootUrl, context.data.slack_api_token, channelId, text, username, iconUrl),
+        url: util.format('%s/chat.postMessage?token=%s&channel=%s&text=%s&username=%s&icon_url=%s', slackRootUrl, context.data.slack_api_token, channelId, text, username, iconUrl),
         method: 'POST',
       }, function(err, response, body) {
         if (err || response.statusCode !== 200) {
-          console.error('slack/chat.postMessage: ' + JSON.stringify(body));
+          console.log('slack/chat.postMessage: ' + JSON.stringify(body));
           return reject(err || 'Status code: ' + response.statusCode);
         }
         return resolve(body);
@@ -147,7 +159,7 @@ return function(context, req, res) {
   function openTicket(commandData) {
 
     if (commandData.token !== context.data.slack_command_token) {
-      return Promise.reject('Invalid token');
+      return Promise.reject(verificationMissmatchErrorMessage);
     }
 
     var slackCustomerUser;
@@ -159,7 +171,7 @@ return function(context, req, res) {
     }
 
     if (!slackCustomerUser || slackCustomerUser.indexOf('@') !== 0) {
-      return Promise.reject('Cannot open ticket. User was not provided.');
+      return Promise.reject(noUserProvidedErrorMessage);
     }
 
     var commandText = commandData.text.replace(slackCustomerUser, '').trim();
@@ -179,14 +191,14 @@ return function(context, req, res) {
           subject = commandText;
         } else if (commandText.length === 0 && body) {
           // If command text is not provide, but we have a body then generate a default subject.
-          subject = 'Slack chat with ' + slackCustomerUser;
+          subject = util.format(defaultTicketSubject, slackCustomerUser);
         } else if (commandText.length > 0 && !body) {
           // If command text is provided, but no body then use generic subject and text as body.
-          subject = 'Slack chat with ' + slackCustomerUser;
+          subject = util.format(defaultTicketSubject, slackCustomerUser);
           body = commandText;
         } else {
           // If no command text and no body, there is an error
-          return Promise.reject('No recent comments found for ' + slackCustomerUser + '. You must provide the issue text.');
+          return Promise.reject(util.format(noCommentsErrorMessage, slackCustomerUser));
         }
 
         return Promise.resolve({
@@ -203,9 +215,9 @@ return function(context, req, res) {
     })
     .then(postSupportTicket)
     .then(ticket => {
-      var text = '<' + slackCustomerUser + '> A support ticket (' + ticket.ticket.id + ') has been opened for your request. We contact you through the email address associated with your Slack account as soon as possible.';
-      var iconUrl = 'https://www.gravatar.com/avatar/7db6b16c9871854df6e522209e0a0631';
-      return postSlackMessage(commandData.channel_id, text, 'support', iconUrl).then(function(result) {
+      var text = util.format(ticketOpenedMessage, slackCustomerUser, ticket.ticket.id);
+      return postSlackMessage(commandData.channel_id, text, slackbotUsername, context.data.slack_icon_url)
+      .then(function(result) {
         return Promise.resolve(ticket);
       });
     });
@@ -213,15 +225,15 @@ return function(context, req, res) {
 
   openTicket(context.data)
   .then(result => {
-    var text = 'Ticket created: <https://auth0.zendesk.com/agent/tickets/' + result.ticket.id + '|' + result.ticket.id + '>';
+    var text = util.format(ticketCreatedMessage, result.ticket.id, result.ticket.id);
     res.writeHead(200, { 'Content-Type': 'text/plain'});
     res.end(text);
   }).catch(function(err) {
-    var message = 'An error has occurred. If you would like to open a support ticket please email support@auth0.com';
+    var message = userErrorMessage;
     if (typeof err === 'string') {
       message = err;
     }
-    console.error(err);
+    console.log(err);
     res.writeHead(500, { 'Content-Type': 'text/plain'});
     res.end(message);
   });
