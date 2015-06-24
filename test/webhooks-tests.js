@@ -11,7 +11,7 @@ describe('Ticket command', function(){
       token: process.env.slack_command_token,
       user_id: process.env.TEST_SLACK_USER_ID,
       channel_id: process.env.TEST_SLACK_CHANNEL_ID,
-      text: '@rolodato This is a test test test test',
+      text: process.env.TEST_SLACK_MESSAGE,
       slack_command_token: process.env.slack_command_token,
       slack_api_token: process.env.slack_api_token,
       zendesk_api_email: process.env.zendesk_api_email,
@@ -22,13 +22,15 @@ describe('Ticket command', function(){
     }
     var code = fs.readFileSync(path.join(__dirname, '../ticket.js'), 'utf8').trim();
     // Create a factory function that calls custom code
-    var script = '(function () { ' + code + '})'
+    var script = '(function () { ' + code + '})';
     script = babel.transform(script, { ast: false }).code;
     var factory = eval(script);
     // Call the factory function to create custom function instance
     var func = factory();
     var res = {};
-    res.writeHead = function() { };
+    res.writeHead = function(code, contentType) {
+      assert(code, 200);
+    };
     res.end = function(text) {
       console.log(text);
       done();
